@@ -1,5 +1,5 @@
 {
-  "generated": "2026-09-20T13:37:32",
+  "generated": "2026-09-20T14:24:03",
   "images": [
     {
       "name": "przyjaciolki",
@@ -282,8 +282,8 @@
     "v": 1,
     "kdf": "PBKDF2-SHA256",
     "iterations": 600000,
-    "salt": "svjszwuBmpQqcudA/m5SNA==",
-    "check": "gaxBm5wGrq0FcGaJrDGs5PyekbU6Ysv5AjXfYZkpLHPt3kFf+3w=",
+    "salt": "Hwu8ZB/fqGpk4gPS951I7g==",
+    "check": "27H6Av5UTzYkATY+rNoGyK18jtKMPlqlELJYUEsN8qbhisiJ4fE=",
     "index": "haslo/index.enc"
   }
 }
