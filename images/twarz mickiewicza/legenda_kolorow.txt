@@ -1,0 +1,21 @@
+LEGENDA KOLORÓW – Program 5 (filmowa wizualizacja emocji)
+
+Emocje główne i ich kolory:
+
+ - radość / nadzieja       -> jasna zieleń
+ - spokój / ukojenie       -> turkus / cyjan
+ - zaskoczenie / napięcie  -> żółty
+ - smutek / melancholia    -> niebieski
+ - złość / frustracja      -> czerwony
+ - lęk / niepewność        -> fiolet
+ - nuda / brak emocji      -> szary
+
+Mapowanie kategorii (z raw_export_*.csv) na emocje główne:
+
+ radość: pozytywne, duma, moralność_pozytywna, pewność
+ spokój: intensywność_niska, bliskość
+ zaskoczenie: zaskoczenie, akcja
+ smutek: negatywne, współczucie
+ złość: obrzydzenie, prawne_oskarżenie, dominacja
+ lęk: wątpliwość, moralność_negatywna
+ nuda: brak wyraźnych emocji lub bardzo niskie sumy

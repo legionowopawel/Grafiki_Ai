@@ -1,6 +1,9 @@
 {
+  "v": 2,
   "folders": [
     "images",
-    "pdf"
+    "pdf",
+    "video",
+    "audio"
   ]
 }

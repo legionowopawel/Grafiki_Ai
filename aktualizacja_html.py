@@ -4,31 +4,52 @@
 aktualizacja_html.py  —  program z oknem do aktualizacji galerii.
 
 Co robi (kolejno):
-  1. Skanuje foldery PUBLICZNE (domyślnie images i pdf) — widoczne dla wszystkich.
+  1. Skanuje foldery PUBLICZNE (domyślnie images, pdf, video, audio) — widoczne dla wszystkich.
+     Rozpoznaje typ pliku (po rozszerzeniu, a bez rozszerzenia — po zawartości) i dostosowuje go
+     do przeglądarki/telefonu:
+       obrazy : jpg jpeg jfif jif png webp gif avif bmp svg  (+ tif, heic, ico… → zamiana na JPEG)
+       filmy  : mp4 m4v webm ogv                             (+ avi, mpg, mov, mkv, wmv… → mp4)
+       audio  : mp3 m4a aac wav ogg opus flac                (+ wma, aiff… → mp3)
+       pdf    : pdf
+     Konwersja filmów/audio wymaga programu ffmpeg (patrz niżej). Przekonwertowane kopie
+     trafiają do folderu converted/, oryginały zostają nietknięte.
   2. (pytając Cię o zgodę) szyfruje PRYWATNE pliki z haslo_git_ignore/<podfolder>/
      hasłem (AES-256-GCM) do folderu haslo/ — tylko ta zaszyfrowana wersja idzie na GitHub.
-  3. Zapisuje galeria.json.
-  4. Wstawia dane do index.html (między znacznikami DATA_START / DATA_END).
+     Prywatne mogą być obrazy (dowolny obsługiwany format) i PDF.
+  3. Zbiera strony HTML z folderu html/ (tytuł i opis bierze z <title> i meta description),
+     żeby strona główna mogła je pokazać jako dołączone podstrony.
+  4. Zapisuje galeria.json i wstawia te same dane do index.html (między znacznikami
+     DATA_START / DATA_END).
 
 Uruchomienie z oknem:   python aktualizacja_html.py
 Uruchomienie bez okna:  python aktualizacja_html.py --cli
 Wymaga:                 pip install -r requirements.txt   (pillow, cryptography)
+Opcjonalnie:            pip install pillow-heif           (zdjęcia .heic z iPhone'a)
+                        ffmpeg w PATH                     (konwersja i miniatury filmów, konwersja audio;
+                                                           Windows: winget install ffmpeg)
 """
 
 import base64
+import codecs
 import hashlib
 import io
 import json
+import mimetypes
 import os
 import queue
 import re
+import shutil
+import subprocess
 import sys
 import threading
 from datetime import datetime
+from html.parser import HTMLParser
 from pathlib import Path
 
 BASE = Path(__file__).resolve().parent
 THUMB_DIR = BASE / "thumbs"
+CONVERTED_DIR = BASE / "converted"           # kopie przekonwertowane do formatów przyjaznych przeglądarce
+PAGES_DIR = BASE / "html"                    # gotowe strony HTML dołączane do strony głównej
 JSON_FILE = BASE / "galeria.json"
 HTML_FILE = BASE / "index.html"
 CONFIG_FILE = BASE / "aktualizacja_config.json"
@@ -40,18 +61,65 @@ VAULT_META = VAULT_DIR / "vault.json"
 STATE_FILE = PRIVATE_DIR / ".stan_szyfrowania.json"
 PBKDF2_ITER = 600_000
 
-DEFAULT_FOLDERS = ["images", "pdf"]
-IMG_EXT = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".avif", ".bmp"}
-PDF_EXT = {".pdf"}
-MIME = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp",
-        ".gif": "image/gif", ".avif": "image/avif", ".bmp": "image/bmp", ".pdf": "application/pdf"}
+DEFAULT_FOLDERS = ["images", "pdf", "video", "audio"]
+CONFIG_VERSION = 2                           # 2 = doszły domyślne foldery video i audio
 THUMB_SIZE = 640  # najdłuższy bok miniatury w px
 TOTAL_STEPS = 4
+GITHUB_WARN_MB = 50                          # GitHub ostrzega powyżej 50 MB i odrzuca powyżej 100 MB
+GITHUB_MAX_MB = 100
+
+# --- obsługiwane formaty -----------------------------------------------------------------
+# "native"      — przeglądarka pokazuje to sama, plik idzie na stronę bez zmian
+# "jpeg_alias"  — to po prostu JPEG pod inną nazwą (jfif, jif…) → kopia .jpg bez utraty jakości
+# "convert"     — przeglądarka tego nie zna → konwersja do JPEG / mp4 / mp3
+IMG_NATIVE = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".avif", ".bmp", ".svg"}
+IMG_JPEG_ALIAS = {".jfif", ".jif", ".jpe", ".pjpeg", ".pjp"}
+IMG_CONVERT = {".tif", ".tiff", ".heic", ".heif", ".ico", ".tga", ".jp2"}
+VIDEO_NATIVE = {".mp4", ".m4v", ".webm", ".ogv"}
+VIDEO_CONVERT = {".mov", ".avi", ".mpg", ".mpeg", ".mpe", ".mkv", ".wmv", ".flv", ".3gp", ".3g2",
+                 ".mts", ".m2ts", ".vob", ".divx", ".asf"}
+AUDIO_NATIVE = {".mp3", ".m4a", ".aac", ".wav", ".ogg", ".oga", ".opus", ".flac"}
+AUDIO_CONVERT = {".wma", ".aif", ".aiff", ".amr", ".mka", ".ape", ".mp2", ".ac3", ".wv"}
+PDF_EXT = {".pdf"}
+PAGE_EXT = {".html", ".htm"}
+
+WEB_VIDEO_CODECS = {"h264", "vp8", "vp9", "av1", "theora"}     # tyle zagra każdy telefon/przeglądarka
+WEB_IMAGE_FORMATS = {"JPEG", "MPO", "PNG", "GIF", "WEBP", "BMP", "AVIF"}   # co Pillow zgłasza dla natywnych
+
+MIME = {
+    ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp",
+    ".gif": "image/gif", ".avif": "image/avif", ".bmp": "image/bmp", ".svg": "image/svg+xml",
+    ".pdf": "application/pdf",
+    ".mp4": "video/mp4", ".m4v": "video/mp4", ".webm": "video/webm", ".ogv": "video/ogg",
+    ".mp3": "audio/mpeg", ".m4a": "audio/mp4", ".aac": "audio/aac", ".wav": "audio/wav",
+    ".ogg": "audio/ogg", ".oga": "audio/ogg", ".opus": "audio/ogg", ".flac": "audio/flac",
+}
+
+EXT_TABLE = {}                               # rozszerzenie → (rodzaj, akcja)
+for _exts, _kind, _action in (
+        (IMG_NATIVE, "image", "native"), (IMG_JPEG_ALIAS, "image", "jpeg_alias"),
+        (IMG_CONVERT, "image", "convert"), (VIDEO_NATIVE, "video", "native"),
+        (VIDEO_CONVERT, "video", "convert"), (AUDIO_NATIVE, "audio", "native"),
+        (AUDIO_CONVERT, "audio", "convert"), (PDF_EXT, "pdf", "native")):
+    for _e in _exts:
+        EXT_TABLE[_e] = (_kind, _action)
+
+KINDS = ("image", "video", "audio", "pdf")
+KIND_KEY = {"image": "images", "video": "video", "audio": "audio", "pdf": "pdf"}
+KIND_NAME = {"image": "Obrazy", "video": "Filmy", "audio": "Audio", "pdf": "PDF"}
 
 try:
     from PIL import Image, ImageOps
 except ImportError:
     Image = None
+
+HEIF_OK = False
+try:
+    import pillow_heif
+    pillow_heif.register_heif_opener()
+    HEIF_OK = True
+except Exception:
+    pass
 
 try:
     from cryptography.hazmat.primitives import hashes
@@ -99,6 +167,24 @@ def thumb_image(src: Path):
         return im.convert("RGB")
 
 
+def jpeg_bytes(src: Path, quality=90) -> bytes:
+    """Cały obraz (bez zmniejszania) jako JPEG — dla formatów, których przeglądarka nie zna."""
+    if Image is None:
+        raise RuntimeError("do zamiany formatu obrazów potrzebny jest Pillow (pip install pillow)")
+    with Image.open(src) as im:
+        im = ImageOps.exif_transpose(im)
+        if im.mode in ("RGBA", "LA", "P"):
+            im = im.convert("RGBA")
+            bg = Image.new("RGB", im.size, (255, 255, 255))
+            bg.paste(im, mask=im.split()[3])
+            im = bg
+        else:
+            im = im.convert("RGB")
+        buf = io.BytesIO()
+        im.save(buf, "JPEG", quality=quality, optimize=True)
+        return buf.getvalue()
+
+
 def make_thumb(src: Path, log):
     """Publiczna miniatura na dysku. Zwraca ścieżkę względną (z /) albo None."""
     if Image is None:
@@ -115,21 +201,362 @@ def make_thumb(src: Path, log):
         return None
 
 
-# ------------------------------------------------------------ foldery publiczne
-def scan(root: Path, exts, with_thumbs, log):
-    """Zwraca listę grup: [{name, label, items:[{src, title, thumb?, ar?}]}]"""
-    groups = []
-    if not root.is_dir():
-        log(f"! Brak folderu: {root.name}")
-        return groups
+def thumb_ar(thumb_rel):
+    """Proporcje miniatury (szerokość / wysokość) — strona dzięki temu nie obcina miniatur."""
+    try:
+        with Image.open(BASE / thumb_rel) as t:
+            return round(t.width / t.height, 4)
+    except Exception:
+        return None
 
-    # foldery domyślne (images, pdf) nie dokładają swojej nazwy do nazw grup;
+
+# ------------------------------------------------- rozpoznawanie formatu i konwersja
+_warned = set()
+
+
+def warn_once(log, key, msg):
+    if key not in _warned:
+        _warned.add(key)
+        log(msg)
+
+
+def sniff_ext(path: Path):
+    """Rozpoznaje typ po zawartości (pierwsze bajty). Zwraca rozszerzenie albo None."""
+    try:
+        with open(path, "rb") as f:
+            h = f.read(32)
+    except OSError:
+        return None
+    if h[:3] == b"\xff\xd8\xff":
+        return ".jpg"
+    if h[:8] == b"\x89PNG\r\n\x1a\n":
+        return ".png"
+    if h[:6] in (b"GIF87a", b"GIF89a"):
+        return ".gif"
+    if h[:4] == b"RIFF" and h[8:12] == b"WEBP":
+        return ".webp"
+    if h[:4] == b"RIFF" and h[8:12] == b"AVI ":
+        return ".avi"
+    if h[:4] == b"RIFF" and h[8:12] == b"WAVE":
+        return ".wav"
+    if h[:4] == b"%PDF":
+        return ".pdf"
+    if h[:2] == b"BM":
+        return ".bmp"
+    if h[:4] in (b"II*\x00", b"MM\x00*"):
+        return ".tif"
+    if h[4:8] == b"ftyp":
+        brand = h[8:12]
+        if brand in (b"heic", b"heix", b"heim", b"heis", b"hevc", b"hevx", b"mif1", b"msf1"):
+            return ".heic"
+        if brand in (b"avif", b"avis"):
+            return ".avif"
+        if brand == b"qt  ":
+            return ".mov"
+        if brand in (b"M4A ", b"M4B "):
+            return ".m4a"
+        if brand[:3] == b"3gp":
+            return ".3gp"
+        return ".mp4"
+    if h[:4] == b"OggS":
+        return ".ogg"
+    if h[:4] == b"fLaC":
+        return ".flac"
+    if h[:3] == b"ID3":
+        return ".mp3"
+    if h[:4] == b"\x1a\x45\xdf\xa3":
+        return ".mkv"
+    if h[:4] in (b"\x00\x00\x01\xba", b"\x00\x00\x01\xb3"):
+        return ".mpg"
+    return None
+
+
+def classify(path: Path):
+    """Rozpoznaje plik. Zwraca (rodzaj, akcja, rozszerzenie) albo None, jeśli to nie nasz format.
+    Po rozszerzeniu; plik BEZ rozszerzenia — po zawartości (wtedy powstaje kopia z poprawną nazwą)."""
+    ext = path.suffix.lower()
+    if ext in EXT_TABLE:
+        kind, action = EXT_TABLE[ext]
+        return kind, action, ext
+    if ext == "":
+        real = sniff_ext(path)
+        if real in EXT_TABLE:
+            kind, action = EXT_TABLE[real]
+            return kind, ("rename" if action == "native" else action), real
+    return None
+
+
+def is_jpeg(path: Path) -> bool:
+    try:
+        with open(path, "rb") as f:
+            return f.read(3) == b"\xff\xd8\xff"
+    except OSError:
+        return False
+
+
+def image_needs_reencode(path: Path) -> bool:
+    """Rozszerzenie mówi np. „jpg”, a w środku jest HEIC/TIFF (iPhone potrafi tak zapisać)?"""
+    if Image is None:
+        return False
+    try:
+        with Image.open(path) as im:
+            return (im.format or "") not in WEB_IMAGE_FORMATS
+    except Exception:
+        return False
+
+
+def converted_path(src: Path, new_ext: str) -> Path:
+    rel = src.relative_to(BASE)
+    return CONVERTED_DIR / rel.parent / (rel.name + new_ext)
+
+
+def is_fresh(out: Path, src: Path) -> bool:
+    try:
+        return out.stat().st_size > 0 and out.stat().st_mtime >= src.stat().st_mtime
+    except OSError:
+        return False
+
+
+def relp(path: Path) -> str:
+    return path.relative_to(BASE).as_posix()
+
+
+def check_size(path: Path, log):
+    try:
+        mb = path.stat().st_size / 1_048_576
+    except OSError:
+        return
+    if mb > GITHUB_MAX_MB:
+        log(f"! {relp(path)} ma {mb:.0f} MB — GitHub odrzuci taki plik (limit {GITHUB_MAX_MB} MB). "
+            "Zmniejsz go albo użyj Git LFS.")
+    elif mb > GITHUB_WARN_MB:
+        log(f"! {relp(path)} ma {mb:.0f} MB — GitHub ostrzega przy plikach powyżej {GITHUB_WARN_MB} MB "
+            f"(twardy limit: {GITHUB_MAX_MB} MB).")
+
+
+def run_tool(cmd):
+    kw = {}
+    if sys.platform.startswith("win"):
+        kw["creationflags"] = 0x08000000  # bez migającego okna konsoli
+    return subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                          encoding="utf-8", errors="replace", **kw)
+
+
+def no_ffmpeg(log):
+    warn_once(log, "ffmpeg",
+              "! Brak programu ffmpeg (ffmpeg.org; Windows: winget install ffmpeg). Bez niego filmy nie dostaną "
+              "miniatur, a avi / mpg / mov / mkv / wma itp. nie zostaną przekonwertowane.")
+
+
+def probe_codecs(path: Path):
+    """Kodeki pliku wg ffprobe, np. {'video': 'h264', 'audio': 'aac'}; pusty słownik, gdy brak ffprobe."""
+    exe = shutil.which("ffprobe")
+    if not exe:
+        return {}
+    try:
+        r = run_tool([exe, "-v", "error", "-show_entries", "stream=codec_type,codec_name",
+                      "-of", "json", str(path)])
+        found = {}
+        for st in json.loads(r.stdout or "{}").get("streams", []):
+            found.setdefault(st.get("codec_type"), st.get("codec_name"))
+        return found
+    except Exception:
+        return {}
+
+
+def ffmpeg_convert(kind, src: Path, out: Path, log):
+    """Film → mp4 (H.264 + AAC, gotowy do strumieniowania), audio → mp3. True, gdy się udało."""
+    exe = shutil.which("ffmpeg")
+    if not exe:
+        return False
+    out.parent.mkdir(parents=True, exist_ok=True)
+    tmp = out.with_name("~" + out.name)
+    if kind == "video":
+        args = ["-map", "0:v:0", "-map", "0:a:0?", "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+                "-pix_fmt", "yuv420p", "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",
+                "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart"]
+    else:
+        args = ["-vn", "-map", "0:a:0", "-c:a", "libmp3lame", "-q:a", "2"]
+    try:
+        r = run_tool([exe, "-y", "-v", "error", "-i", str(src), *args, str(tmp)])
+        if r.returncode != 0 or not tmp.exists() or tmp.stat().st_size == 0:
+            log(f"! konwersja nieudana dla {src.name}: {(r.stderr or '').strip()[-300:]}")
+            return False
+        os.replace(tmp, out)
+        return True
+    except Exception as exc:
+        log(f"! konwersja nieudana dla {src.name}: {exc}")
+        return False
+    finally:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+
+
+def make_video_thumb(src: Path, log):
+    """Klatka z filmu jako miniatura (thumbs/…). Zwraca ścieżkę względną albo None."""
+    exe = shutil.which("ffmpeg")
+    if not exe:
+        no_ffmpeg(log)
+        return None
+    out = THUMB_DIR / src.relative_to(BASE).parent / (src.name + ".jpg")
+    if is_fresh(out, src):
+        return relp(out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    for ss in ("1", "0"):  # film krótszy niż sekunda → klatka z początku
+        try:
+            run_tool([exe, "-y", "-v", "error", "-ss", ss, "-i", str(src), "-frames:v", "1",
+                      "-vf", f"scale='min({THUMB_SIZE},iw)':-2", "-q:v", "4", str(out)])
+        except Exception as exc:
+            log(f"! miniatura filmu nieudana dla {src.name}: {exc}")
+            return None
+        if out.exists() and out.stat().st_size > 0:
+            return relp(out)
+    log(f"! miniatura filmu nieudana dla {src.name}")
+    return None
+
+
+def prepare_image(src: Path, action, ext, log, used):
+    """Zwraca (plik dla strony, mime) albo None."""
+    if action == "native" and ext != ".svg" and image_needs_reencode(src):
+        log(f"  {src.name}: w środku inny format niż sugeruje rozszerzenie — zamieniam na JPEG")
+        action = "convert"
+    if action == "native":
+        return src, MIME[ext]
+    if action == "jpeg_alias" and not is_jpeg(src):
+        action = "convert"
+    if action in ("jpeg_alias", "rename"):
+        new_ext = ".jpg" if action == "jpeg_alias" else ext
+        out = converted_path(src, new_ext)
+        if not is_fresh(out, src):
+            out.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, out)
+            log(f"  kopia z poprawnym rozszerzeniem: {src.name} → {new_ext}")
+        used.add(out)
+        return out, MIME[new_ext]
+    # action == "convert": zamiana na JPEG
+    out = converted_path(src, ".jpg")
+    if not is_fresh(out, src):
+        if ext in (".heic", ".heif") and not HEIF_OK:
+            warn_once(log, "heif", "! Pomijam pliki .heic/.heif — zainstaluj obsługę: pip install pillow-heif")
+            return None
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_bytes(jpeg_bytes(src))
+        log(f"  zamieniono na JPEG: {src.name}")
+    used.add(out)
+    return out, "image/jpeg"
+
+
+def prepare_av(kind, src: Path, action, ext, log, used):
+    """Film lub audio. Zwraca (plik dla strony, mime, czy_zagra_w_przeglądarce)."""
+    target = ".mp4" if kind == "video" else ".mp3"
+    fallback_native = None
+    if action == "native":
+        fallback_native = (src, MIME[ext], True)
+        if kind == "video":
+            vcodec = probe_codecs(src).get("video")
+            if vcodec and vcodec not in WEB_VIDEO_CODECS:
+                if not is_fresh(converted_path(src, target), src):
+                    log(f"  {src.name}: kodek {vcodec} nie zagra wszędzie — konwertuję do H.264")
+                action = "convert"
+        if action == "native":
+            return fallback_native
+    if action == "rename":
+        out = converted_path(src, ext)
+        if not is_fresh(out, src):
+            out.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, out)
+            log(f"  kopia z poprawnym rozszerzeniem: {src.name} → {ext}")
+        used.add(out)
+        return out, MIME[ext], True
+
+    out = converted_path(src, target)
+    if is_fresh(out, src):
+        used.add(out)
+        return out, MIME[target], True
+    guessed = mimetypes.guess_type(src.name)[0] or "application/octet-stream"
+    if not shutil.which("ffmpeg"):
+        no_ffmpeg(log)
+        return fallback_native or (src, guessed, False)
+    log(f"  konwertuję {src.name} → {target[1:]} (przy dużych plikach to może potrwać)…")
+    if ffmpeg_convert(kind, src, out, log):
+        used.add(out)
+        return out, MIME[target], True
+    return fallback_native or (src, guessed, False)
+
+
+def process_file(full: Path, kind, action, ext, log, used):
+    """Jeden plik publiczny → element do galeria.json (albo None, gdy się nie da)."""
+    check_size(full, log)
+    title = pretty_title(full.name)
+
+    if kind == "pdf":
+        web = full
+        if action == "rename":  # PDF bez rozszerzenia → kopia z .pdf
+            web = converted_path(full, ".pdf")
+            if not is_fresh(web, full):
+                web.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(full, web)
+            used.add(web)
+        return {"kind": "pdf", "src": relp(web), "title": title}
+
+    if kind == "image":
+        res = prepare_image(full, action, ext, log, used)
+        if not res:
+            return None
+        web, mime = res
+        if web != full:
+            check_size(web, log)
+        item = {"kind": "image", "src": relp(web), "title": title, "mime": mime}
+        if web.suffix.lower() != ".svg":
+            thumb = make_thumb(web, log)
+            if thumb:
+                item["thumb"] = thumb
+                ar = thumb_ar(thumb)
+                if ar:
+                    item["ar"] = ar
+        return item
+
+    web, mime, playable = prepare_av(kind, full, action, ext, log, used)
+    if web != full:
+        check_size(web, log)
+    item = {"kind": kind, "src": relp(web), "title": title, "mime": mime}
+    if not playable:
+        item["playable"] = False  # strona może pokazać tylko link „pobierz”
+        log(f"! {full.name}: nie udało się przygotować wersji dla przeglądarki — na stronie będzie tylko link do pobrania.")
+    if kind == "video":
+        thumb = make_video_thumb(web if playable else full, log)
+        if thumb:
+            item["thumb"] = thumb
+            ar = thumb_ar(thumb)
+            if ar:
+                item["ar"] = ar
+    return item
+
+
+# ------------------------------------------------------------ foldery publiczne
+DEFAULT_ROOTS = tuple(BASE / f for f in DEFAULT_FOLDERS)
+
+
+def scan(root: Path, log, used):
+    """Jeden przebieg po folderze. Zwraca {rodzaj: [grupy]}, grupa = {name, label, items}."""
+    result = {k: [] for k in KINDS}
+    if not root.is_dir():
+        if root in DEFAULT_ROOTS:
+            log(f"  (brak folderu {root.name} — pomijam)")
+        else:
+            log(f"! Brak folderu: {root.name}")
+        return result
+
+    # foldery domyślne (images, pdf, video, audio) nie dokładają swojej nazwy do nazw grup;
     # foldery dodane przez użytkownika — tak
-    prefix = "" if root in (BASE / "images", BASE / "pdf") else root.relative_to(BASE).as_posix()
+    prefix = "" if root in DEFAULT_ROOTS else root.relative_to(BASE).as_posix()
+    skip_dirs = {THUMB_DIR, CONVERTED_DIR}
 
     for folder, dirs, files in os.walk(root):
         dirs[:] = sorted(
-            (d for d in dirs if not d.startswith(".") and (Path(folder) / d) != THUMB_DIR),
+            (d for d in dirs if not d.startswith(".") and (Path(folder) / d) not in skip_dirs),
             key=natural_key,
         )
         folder_path = Path(folder)
@@ -137,26 +564,27 @@ def scan(root: Path, exts, with_thumbs, log):
         rel = "" if rel == "." else rel
         name = "/".join(p for p in (prefix, rel) if p)
 
-        items = []
+        per_kind = {k: [] for k in KINDS}
         for fname in sorted(files, key=natural_key):
-            if fname.startswith(".") or Path(fname).suffix.lower() not in exts:
+            if fname.startswith("."):
                 continue
             full = folder_path / fname
-            item = {"src": full.relative_to(BASE).as_posix(), "title": pretty_title(fname)}
-            if with_thumbs:
-                thumb = make_thumb(full, log)
-                if thumb:
-                    item["thumb"] = thumb
-                    try:  # proporcje obrazka — strona dzięki temu nie obcina miniatur
-                        with Image.open(BASE / thumb) as t:
-                            item["ar"] = round(t.width / t.height, 4)
-                    except Exception:
-                        pass
-            items.append(item)
+            info = classify(full)
+            if not info:
+                continue
+            kind, action, ext = info
+            try:
+                item = process_file(full, kind, action, ext, log, used)
+            except Exception as exc:  # jeden zły plik nie zatrzymuje całości
+                log(f"! pomijam {fname}: {exc}")
+                continue
+            if item:
+                per_kind[kind].append(item)
 
-        if items:
-            groups.append({"name": name, "label": pretty_label(name), "items": items})
-    return groups
+        for k in KINDS:
+            if per_kind[k]:
+                result[k].append({"name": name, "label": pretty_label(name), "items": per_kind[k]})
+    return result
 
 
 def merge_groups(groups):
@@ -181,10 +609,104 @@ def normalize_roots(folders, log):
         if p in (PRIVATE_DIR, VAULT_DIR) or PRIVATE_DIR in p.parents or VAULT_DIR in p.parents:
             log(f"! Pomijam „{f}”: to folder prywatny/zaszyfrowany, nie może być publiczny.")
             continue
+        if p in (THUMB_DIR, CONVERTED_DIR) or THUMB_DIR in p.parents or CONVERTED_DIR in p.parents:
+            log(f"! Pomijam „{f}”: to folder techniczny (miniatury / konwersje), program tworzy go sam.")
+            continue
         if p not in roots:
             roots.append(p)
     # jeśli wybrano folder i jego podfolder, liczy się tylko folder nadrzędny
     return [r for r in roots if not any(o != r and o in r.parents for o in roots)]
+
+
+def prune_converted(used, log):
+    """Usuwa z converted/ kopie, których oryginałów już nie ma na stronie."""
+    if not CONVERTED_DIR.is_dir():
+        return
+    removed = 0
+    for p in list(CONVERTED_DIR.rglob("*")):
+        if p.is_file() and p not in used:
+            p.unlink()
+            removed += 1
+    for d in sorted((d for d in CONVERTED_DIR.rglob("*") if d.is_dir()), reverse=True):
+        try:
+            d.rmdir()
+        except OSError:
+            pass
+    if removed:
+        log(f"Usunięto {removed} nieaktualnych kopii z converted/.")
+
+
+# ------------------------------------------------- strony HTML dołączane do strony głównej
+class _MetaParser(HTMLParser):
+    """Wyciąga <title> i <meta name="description"> z nagłówka strony."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.title = ""
+        self.desc = ""
+        self._in_title = False
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "title":
+            self._in_title = True
+        elif tag == "meta":
+            a = {k.lower(): (v or "") for k, v in attrs}
+            if a.get("name", "").lower() == "description" and not self.desc:
+                self.desc = a.get("content", "")
+
+    def handle_endtag(self, tag):
+        if tag == "title":
+            self._in_title = False
+
+    def handle_data(self, data):
+        if self._in_title:
+            self.title += data
+
+
+def html_meta(path: Path):
+    """(tytuł, opis) strony HTML; puste napisy, gdy ich nie ma."""
+    try:
+        with open(path, "rb") as f:
+            raw = f.read(65536)
+    except OSError:
+        return "", ""
+    try:
+        text = codecs.getincrementaldecoder("utf-8")().decode(raw, final=False)
+    except UnicodeDecodeError:  # starsze strony po polsku bywają w Windows-1250
+        text = raw.decode("cp1250", errors="replace")
+    parser = _MetaParser()
+    try:
+        parser.feed(text)
+    except Exception:
+        pass
+    return " ".join(parser.title.split()), " ".join(parser.desc.split())
+
+
+def scan_pages(log):
+    """Strony z folderu html/ → grupy [{name, label, items:[{kind:'page', src, title, desc?}]}]."""
+    groups = []
+    if not PAGES_DIR.is_dir():
+        log("  (brak folderu html — pomijam strony HTML)")
+        return groups
+    log("Skanuję: html (strony do dołączenia)")
+    for folder, dirs, files in os.walk(PAGES_DIR):
+        dirs[:] = sorted((d for d in dirs if not d.startswith(".")), key=natural_key)
+        folder_path = Path(folder)
+        rel = folder_path.relative_to(PAGES_DIR).as_posix()
+        rel = "" if rel == "." else rel
+        items = []
+        for fname in sorted(files, key=natural_key):
+            if fname.startswith(".") or Path(fname).suffix.lower() not in PAGE_EXT:
+                continue
+            full = folder_path / fname
+            title, desc = html_meta(full)
+            item = {"kind": "page", "src": relp(full), "title": title or pretty_title(fname)}
+            if desc:
+                item["desc"] = desc
+            items.append(item)
+        if items:
+            groups.append({"name": rel, "label": pretty_label(rel) if rel else "Strony", "items": items})
+    return sorted(groups, key=lambda g: (g["name"] != "", natural_key(g["name"])))
 
 
 # ------------------------------------------------------------------ szyfrowanie
@@ -231,19 +753,41 @@ def password_mode(password: str) -> str:
         return "different"
 
 
-def list_private_files():
-    """[(ścieżka względna w haslo_git_ignore (z /), Path)] — tylko obrazki i PDF."""
+def list_private_files(skipped=None):
+    """[(ścieżka względna w haslo_git_ignore (z /), Path)] — obrazy (każdy obsługiwany format) i PDF.
+    Filmy i audio nie mogą być prywatne (przeglądarka musiałaby rozszyfrować cały plik w pamięci) —
+    trafiają na listę `skipped`, jeśli ją podano."""
     out = []
     if not PRIVATE_DIR.is_dir():
         return out
     for folder, dirs, files in os.walk(PRIVATE_DIR):
         dirs[:] = sorted((d for d in dirs if not d.startswith(".")), key=natural_key)
         for fname in sorted(files, key=natural_key):
-            if fname.startswith(".") or Path(fname).suffix.lower() not in (IMG_EXT | PDF_EXT):
+            if fname.startswith("."):
                 continue
             p = Path(folder) / fname
+            info = classify(p)
+            if not info:
+                continue
+            if info[0] not in ("image", "pdf"):
+                if skipped is not None:
+                    skipped.append(p.relative_to(PRIVATE_DIR).as_posix())
+                continue
             out.append((p.relative_to(PRIVATE_DIR).as_posix(), p))
     return out
+
+
+def private_payload(path: Path, kind, action, ext):
+    """(bajty do zaszyfrowania, mime) — obrazy w formatach nieznanych przeglądarce zamieniamy na JPEG."""
+    if kind == "pdf":
+        return path.read_bytes(), MIME[".pdf"]
+    if action in ("native", "rename") and not (ext != ".svg" and image_needs_reencode(path)):
+        return path.read_bytes(), MIME[ext]
+    if action == "jpeg_alias" and is_jpeg(path):
+        return path.read_bytes(), "image/jpeg"
+    if ext in (".heic", ".heif") and not HEIF_OK:
+        raise RuntimeError("pliki .heic wymagają: pip install pillow-heif")
+    return jpeg_bytes(path), "image/jpeg"
 
 
 def private_summary():
@@ -283,7 +827,11 @@ def encrypt_private(password, new_salt, log):
     if not CRYPTO_OK:
         raise RuntimeError("Brak biblioteki cryptography. Zainstaluj: pip install cryptography")
 
-    files = list_private_files()
+    skipped = []
+    files = list_private_files(skipped)
+    if skipped:
+        log(f"! Pomijam {len(skipped)} plików audio/wideo w haslo_git_ignore/ — prywatne mogą być tylko obrazy i PDF "
+            "(telefon musiałby rozszyfrować cały film w pamięci). Filmy i audio dodaj do folderów publicznych.")
     if not files:
         log("W haslo_git_ignore/ nie ma plików — usuwam zaszyfrowaną część ze strony.")
         if VAULT_DIR.is_dir():
@@ -311,8 +859,7 @@ def encrypt_private(password, new_salt, log):
     wanted, groups_map = set(), {}
     done = skipped = 0
     for rel, path in files:
-        ext = path.suffix.lower()
-        kind = "pdf" if ext in PDF_EXT else "image"
+        kind, action, ext = classify(path)
         fid = hashlib.sha256(salt + rel.encode("utf-8")).hexdigest()[:24]
         src_name, thumb_name = f"{fid}.enc", f"{fid}_t.enc"
         st = path.stat()
@@ -321,15 +868,20 @@ def encrypt_private(password, new_salt, log):
         reuse = (
             prev and prev.get("size") == st.st_size and prev.get("mtime") == st.st_mtime_ns
             and (VAULT_DIR / src_name).exists()
-            and (kind == "pdf" or Image is None or (VAULT_DIR / thumb_name).exists())
+            and (kind == "pdf" or ext == ".svg" or Image is None or (VAULT_DIR / thumb_name).exists())
         )
         if reuse:
             info = prev
             skipped += 1
         else:
-            (VAULT_DIR / src_name).write_bytes(encrypt_bytes(key, path.read_bytes()))
-            info = {"size": st.st_size, "mtime": st.st_mtime_ns}
-            if kind == "image" and Image is not None:
+            try:
+                payload, mime = private_payload(path, kind, action, ext)
+            except Exception as exc:
+                log(f"! pomijam {rel}: {exc}")
+                continue
+            (VAULT_DIR / src_name).write_bytes(encrypt_bytes(key, payload))
+            info = {"size": st.st_size, "mtime": st.st_mtime_ns, "mime": mime}
+            if kind == "image" and ext != ".svg" and Image is not None:
                 try:
                     im = thumb_image(path)
                     buf = io.BytesIO()
@@ -343,7 +895,8 @@ def encrypt_private(password, new_salt, log):
         state["files"][rel] = info
 
         wanted.add(src_name)
-        item = {"kind": kind, "src": f"haslo/{src_name}", "title": pretty_title(path.name), "mime": MIME[ext]}
+        item = {"kind": kind, "src": f"haslo/{src_name}", "title": pretty_title(path.name),
+                "mime": info.get("mime") or MIME.get(ext, "application/octet-stream")}
         if "ar" in info:
             item["thumb"] = f"haslo/{thumb_name}"
             item["ar"] = info["ar"]
@@ -399,19 +952,26 @@ def inject_into_html(payload, log):
 def run_update(folders, log=print, encrypt=False, password=None, new_salt=False):
     """Cała aktualizacja, krok po kroku, z komentarzem w logu."""
     log(f"Folder projektu: {BASE}")
+    _warned.clear()
     if Image is None:
-        log("! Pillow niezainstalowane — bez miniatur (pip install pillow).")
+        log("! Pillow niezainstalowane — bez miniatur i bez zamiany formatów obrazów (pip install pillow).")
 
     # --- 1 ---
-    step(log, 1, "Foldery publiczne",
-         "Przeglądam wybrane foldery i zbieram listę obrazków oraz PDF-ów. Te pliki będą widoczne dla wszystkich.\n"
-         "Do każdego obrazka robię małą miniaturę (folder thumbs/), żeby strona szybko działała na telefonie.")
+    step(log, 1, "Foldery publiczne i strony HTML",
+         "Przeglądam wybrane foldery i zbieram obrazy, filmy, pliki audio i PDF-y. Rozpoznaję format każdego pliku;\n"
+         "jeśli przeglądarka lub telefon by go nie odtworzył (np. avi, mpg, mov, heic, wma), robię kopię w folderze\n"
+         "converted/ w formacie uniwersalnym (JPEG / mp4 / mp3). Do obrazów i filmów robię małą miniaturę (thumbs/).\n"
+         "Na koniec zbieram strony HTML z folderu html/, żeby strona główna mogła je pokazać.")
     roots = normalize_roots(folders, log)
-    images, pdfs = [], []
+    found = {k: [] for k in KINDS}
+    used = set()  # pliki w converted/, które są nadal potrzebne
     for root in roots:
         log(f"Skanuję: {root.relative_to(BASE).as_posix()}")
-        images += scan(root, IMG_EXT, True, log)
-        pdfs += scan(root, PDF_EXT, False, log)
+        got = scan(root, log, used)
+        for k in KINDS:
+            found[k] += got[k]
+    pages = scan_pages(log)
+    prune_converted(used, log)
 
     # --- 2 ---
     if encrypt:
@@ -427,14 +987,17 @@ def run_update(folders, log=print, encrypt=False, password=None, new_salt=False)
 
     data = {
         "generated": datetime.now().isoformat(timespec="seconds"),
-        "images": merge_groups(images),
-        "pdf": merge_groups(pdfs),
+        "images": merge_groups(found["image"]),
+        "pdf": merge_groups(found["pdf"]),
+        "video": merge_groups(found["video"]),
+        "audio": merge_groups(found["audio"]),
+        "pages": pages,
         "vault": vault,
     }
 
     # --- 3 ---
     step(log, 3, "Zapis galeria.json",
-         "Zapisuję listę wszystkich publicznych plików (i dane potrzebne do odblokowania prywatnych) w galeria.json.")
+         "Zapisuję listę wszystkich publicznych plików i stron (oraz dane potrzebne do odblokowania prywatnych) w galeria.json.")
     JSON_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
     # --- 4 ---
@@ -442,16 +1005,25 @@ def run_update(folders, log=print, encrypt=False, password=None, new_salt=False)
          "Wstawiam te same dane do index.html, dzięki czemu strona działa od razu, bez dodatkowego pobierania.")
     html_ok = inject_into_html(json.dumps(data, ensure_ascii=False, separators=(",", ":")), log)
 
-    n_img = sum(len(g["items"]) for g in data["images"])
-    n_pdf = sum(len(g["items"]) for g in data["pdf"])
     log("### Podsumowanie")
-    log(f"Obrazy publiczne: {n_img} w {len(data['images'])} folderach")
-    for g in data["images"]:
+    counts = {}
+    for kind in KINDS:
+        key = KIND_KEY[kind]
+        counts[key] = sum(len(g["items"]) for g in data[key])
+        log(f"{KIND_NAME[kind]}: {counts[key]} w {len(data[key])} folderach")
+        for g in data[key]:
+            log(f"   {g['label']}: {len(g['items'])}")
+    counts["pages"] = sum(len(g["items"]) for g in pages)
+    log(f"Strony HTML: {counts['pages']}")
+    for g in pages:
         log(f"   {g['label']}: {len(g['items'])}")
-    log(f"PDF publiczne: {n_pdf} w {len(data['pdf'])} folderach")
     log("Część prywatna: " + ("aktywna (zakładka „Prywatne”)" if vault else "brak"))
+    if used:
+        log(f"! W converted/ jest {len(used)} kopii w formatach przyjaznych przeglądarce. Oryginały (np. avi, mov, heic) "
+            "zostają w swoich folderach i git add . wyśle je razem z kopiami — jeśli nie chcesz, przenieś oryginały "
+            "poza folder projektu albo dopisz je do .gitignore.")
     log(f"Zapisano {JSON_FILE.name}" + (f" i {HTML_FILE.name}." if html_ok else "."))
-    return {"images": n_img, "pdf": n_pdf, "html_ok": html_ok}
+    return {**counts, "html_ok": html_ok}
 
 
 # --------------------------------------------------------------- konfiguracja
@@ -460,6 +1032,8 @@ def load_config():
         data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
         folders = [str(f) for f in data.get("folders", [])]
         if folders:
+            if int(data.get("v", 1)) < CONFIG_VERSION:  # stary plik konfiguracji — dokładam nowe domyślne foldery
+                folders += [f for f in DEFAULT_FOLDERS if f not in folders]
             return folders
     except Exception:
         pass
@@ -468,7 +1042,7 @@ def load_config():
 
 def save_config(folders):
     try:
-        CONFIG_FILE.write_text(json.dumps({"folders": folders}, ensure_ascii=False, indent=2), encoding="utf-8")
+        CONFIG_FILE.write_text(json.dumps({"v": CONFIG_VERSION, "folders": folders}, ensure_ascii=False, indent=2), encoding="utf-8")
     except Exception:
         pass
 
@@ -523,13 +1097,14 @@ def open_folder(path: Path):
 
 # ------------------------------------------------------------------- interfejs
 INTRO = (
-    "Ten program przygotowuje galerię do wysłania na GitHub. Robi to w 4 krokach: (1) zbiera pliki z folderów "
-    "publicznych, (2) — jeśli się zgodzisz — szyfruje prywatne pliki hasłem, (3) zapisuje galeria.json, "
+    "Ten program przygotowuje galerię do wysłania na GitHub. Robi to w 4 krokach: (1) zbiera obrazy, filmy, audio i PDF "
+    "z folderów publicznych (rozpoznaje format i w razie potrzeby zamienia go na taki, który zagra w telefonie) oraz "
+    "strony z folderu html, (2) — jeśli się zgodzisz — szyfruje prywatne pliki hasłem, (3) zapisuje galeria.json, "
     "(4) aktualizuje index.html. Po każdym kliknięciu zielonego przycisku zobaczysz na dole, co dokładnie się dzieje."
 )
 
 PRIVATE_INFO = (
-    "Oryginały prywatnych grafik trzymaj w folderze haslo_git_ignore/<podfolder>/. Ten folder jest w .gitignore, "
+    "Oryginały prywatnych grafik i PDF trzymaj w folderze haslo_git_ignore/<podfolder>/. Ten folder jest w .gitignore, "
     "więc nigdy nie trafia na GitHub. Program zaszyfruje je do folderu haslo/ — tylko ta wersja jest publikowana. "
     "Na stronie zobaczysz je w zakładce „Prywatne” po wpisaniu hasła."
 )
@@ -560,7 +1135,7 @@ def launch_gui():
     # ---------- blok 1: foldery publiczne
     pub = ttk.LabelFrame(frm, text=" 1. Foldery publiczne — widoczne dla wszystkich ", padding=8)
     pub.pack(fill="x")
-    ttk.Label(pub, text="Program przeszuka te foldery (razem z podfolderami) w poszukiwaniu obrazków i plików PDF. "
+    ttk.Label(pub, text="Program przeszuka te foldery (razem z podfolderami) w poszukiwaniu obrazów, filmów, plików audio i PDF. "
                         "Możesz dodać dowolnie wiele folderów, byle leżały w folderze projektu.",
               wraplength=710, justify="left").pack(anchor="w", pady=(0, 6))
     list_row = ttk.Frame(pub)
@@ -576,7 +1151,7 @@ def launch_gui():
             box.insert("end", f)
 
     def add_folder():
-        d = filedialog.askdirectory(initialdir=str(BASE), title="Wybierz katalog z grafikami lub PDF")
+        d = filedialog.askdirectory(initialdir=str(BASE), title="Wybierz katalog z grafikami, filmami, audio lub PDF")
         if not d:
             return
         try:
@@ -590,6 +1165,9 @@ def launch_gui():
             return
         if rel in ("haslo", "haslo_git_ignore") or rel.startswith(("haslo/", "haslo_git_ignore/")):
             messagebox.showwarning("Zły folder", "Foldery haslo i haslo_git_ignore obsługuje część prywatna (blok 2).")
+            return
+        if rel in ("thumbs", "converted") or rel.startswith(("thumbs/", "converted/")):
+            messagebox.showwarning("Zły folder", "Foldery thumbs i converted program tworzy sam — nie dodawaj ich.")
             return
         if rel not in folders:
             folders.append(rel)
