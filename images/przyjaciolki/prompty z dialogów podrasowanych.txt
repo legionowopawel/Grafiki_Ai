@@ -1,0 +1,30 @@
+Oto kompletny, dopracowany prompt w języku angielskim (gotowy do wklejenia do generatora), zawierający nagłówek z kontekstem na samej górze komiksu oraz dokładny opis fabuły, postaci i kadrów:
+
+---
+
+**Prompt:**
+
+> **Title Text at the Very Top Header:** "TEST WIERNOSCI: Na początku związku dziewczyna postanowiła sprawdzić swojego partnera. Zatrudniła piękną przyjaciółkę jako przynętę w restauracji, ale mężczyzna okazał się absurdalnie zapatrzony w swoją ukochaną..."
+> **Style:** Black and white satirical comic strip, high detail, bold outlines, exaggerated facial expressions, no gradients. Clean speech bubbles with capital text in Polish. Vertical multi-panel layout (2 columns x 4 rows, 8 panels total).
+> **Coloring Exception:** The attractive blonde friend (the bait) is the ONLY selectively full-color element in every panel (bright colorful dress, blonde hair) to make her stand out from the black-and-white art style.
+> **Characters:**
+> * **Main Girl:** Dark hair, expressive exaggerated facial expressions, dynamic poses.
+> * **Partner (Man):** Calm, loving face, always staring devotedly at his girlfriend or gazing away to avoid looking at the bait.
+> * **Blonde Friend (The Bait):** Attractive, blonde, voluptuous, wearing a colorful, striking dress.
+> 
+> 
+> **Panel Breakdown:**
+> 1. **Panel 1 (Próba 1):** Blonde friend sits in the background. Girl points backward subtly: *"Zobacz tamtą dziewczynę w kolorowej sukience! Warto spojrzeć!"*. Man looks warmly at his girl: *"Kochanie, rozumiem, że to dla Ciebie ważne, ale liczy się tylko nasza relacja. Słucham Cię z uwagą."*
+> 2. **Panel 2 (Próba 2):** Camera angle from above. Blonde friend leans playfully at her table. Girl pushes menu: *"Czy ja podpisalam klauzulę, że nie patrzysz na nikogo innego? Spójrz na nią!"*. Man holds girl's hands: *"Doceniam Twoją potrzebę wolności. Jestem tu, by Cię wysłuchać."*
+> 3. **Panel 3 (Próba 3):** Side angle. Blonde friend passes nearby. Girl gets impatient: *"Ona specjalnie przeszła obok! No spójrz, proszę!"*. Man looks straight into girl's eyes: *"Twoje poczucie frustracji jest zrozumiałe. Opowiedz mi o swoich emocjach."*
+> 4. **Panel 4 (Próba 4):** Close-up. Blonde friend sits at the bar in background. Girl gets angry: *"Nawet gdyby kelner zatańczył, ty byś nie spojrzał?!"*. Man puts hand on heart: *"Wiem, że czujesz zaskoczenie. Przejdźmy przez ten moment razem."*
+> 5. **Panel 5 (Cisza):** Low camera angle. Girl rests head on hand in defeat, blonde friend in background. Girl: *"Jej cierpliwość kończy się..."*. Man softly: *"Wiem, rozumiem Cię."*
+> 6. **Panel 6 (Przeprosiny):** Man touches her shoulder gently. Girl tearful: *"Wybacz mi, to było głupie."*. Man smiles warmly: *"Dla mnie jesteś jedyna."*
+> 7. **Panel 7 (Spokój):** Girl smiles softly: *"Dobrze, niech to się nie powtórzy."*. Man holds both her hands: *"Zapewniam Cię, liczysz się tylko Ty."*
+> 8. **Panel 8 (Wielki Finał):** Front angle. Desperate girl physically brings the colorful blonde friend directly in front of the man's face at their table. Girl shouts: *"To jest moja przyjaciółka, którą zatrudniłam, żeby Cię sprawdzić! No, teraz MUSISZ ją zobaczyć!"*. Man ignores the blonde standing right in front of him, looks blankly up at the ceiling with cartoon stars around his head (*stare*) and says gently: *"Kochanie, czuję Twój głęboki dyskomfort. Porozmawiajmy o tym."*
+> 
+> 
+
+---
+
+Czy chciałbyś dostosować jeszcze jakieś teksty w dymkach lub elementy scenerii przed wygenerowaniem nowej wersji?

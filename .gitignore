@@ -1,0 +1,19 @@
+# Robocze pliki, które nie mają trafić na GitHub
+Git_ignore_robocze_pliki/
+html.txt
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Systemowe / edytory
+Thumbs.db
+desktop.ini
+.DS_Store
+.idea/
+.vscode/
+
+# Prywatne oryginały (nie wysyłać na GitHub!)
+haslo_git_ignore/

@@ -1,0 +1,538 @@
+<!doctype html>
+<html lang="pl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Komiksy AI</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f4f0f3;
+    --surface: #ffffff;
+    --ink: #251d2a;
+    --muted: #6f6473;
+    --accent: #7a2e5a;
+    --accent-ink: #ffffff;
+    --line: #ddd3db;
+    --font: "Bricolage Grotesque", "Segoe UI", system-ui, -apple-system, Roboto, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #17131a;
+      --surface: #211b25;
+      --ink: #f1eaf2;
+      --muted: #a898ab;
+      --accent: #e08bbd;
+      --accent-ink: #1c1020;
+      --line: #372d3b;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font: 400 16px/1.5 var(--font);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+  button { font: inherit; color: inherit; cursor: pointer; }
+  :focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+
+  /* ---------- pasek górny ---------- */
+  .top {
+    position: sticky; top: 0; z-index: 5;
+    background: color-mix(in srgb, var(--bg) 92%, transparent);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    border-bottom: 1px solid var(--line);
+    padding: calc(10px + env(safe-area-inset-top, 0px)) max(14px, env(safe-area-inset-right, 0px)) 10px max(14px, env(safe-area-inset-left, 0px));
+  }
+  .top-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; max-width: 1600px; margin: 0 auto; }
+  h1 { font-size: 1.35rem; font-weight: 700; letter-spacing: -0.02em; margin: 0; }
+  .tabs { display: inline-flex; background: var(--surface); border: 1px solid var(--line); border-radius: 999px; padding: 3px; }
+  .tab { white-space: nowrap; border: 0; background: transparent; padding: 6px 12px; border-radius: 999px; font-weight: 500; color: var(--muted); }
+  .tab[aria-selected="true"] { background: var(--accent); color: var(--accent-ink); }
+  .chips { display: flex; gap: 8px; overflow-x: auto; max-width: 1600px; margin: 10px auto 0; padding-bottom: 2px; scrollbar-width: none; }
+  .chips::-webkit-scrollbar { display: none; }
+  .chips[hidden] { display: none; }
+  .chip { flex: none; border: 1px solid var(--line); background: var(--surface); border-radius: 999px; padding: 5px 13px; font-size: .92rem; }
+  .chip small { color: var(--muted); margin-left: 4px; }
+  .chip[aria-pressed="true"] { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); font-weight: 700; }
+
+  /* ---------- siatka ---------- */
+  main { max-width: 1600px; margin: 0 auto; padding: 16px max(14px, env(safe-area-inset-right, 0px)) 40px max(14px, env(safe-area-inset-left, 0px)); }
+  section + section { margin-top: 28px; }
+  h2 { font-size: 1.05rem; font-weight: 700; margin: 0 0 10px; }
+  h2 small { color: var(--muted); font-weight: 400; margin-left: 6px; }
+  /* rzędy dopasowane do proporcji obrazków — nic nie jest obcinane, kolejność zostaje */
+  .grid { --h: 220px; display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-start; }
+  .grid::after { content: ""; flex-grow: 1000000; }
+  @media (min-width: 640px)  { .grid { --h: 240px; gap: 14px; } }
+  @media (min-width: 1200px) { .grid { --h: 280px; } }
+  .thumb { --ar: 0.75; flex: calc(var(--ar) * 100) 1 calc(var(--ar) * var(--h)); aspect-ratio: var(--ar); min-width: 0; max-width: 100%; padding: 0; border: 0; border-radius: 10px; overflow: hidden; background: var(--line); position: relative; }
+  .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; opacity: 0; transition: opacity .25s; }
+  .thumb.ok img { opacity: 1; }
+  .thumb:hover img { transform: scale(1.03); transition: opacity .25s, transform .3s; }
+
+  /* ---------- PDF ---------- */
+  .pdf-list { display: grid; gap: 8px; }
+  .grid + .pdf-list { margin-top: 12px; }
+  .pdf { display: flex; align-items: center; gap: 12px; padding: 12px 14px; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; color: inherit; text-decoration: none; }
+  .pdf:hover { border-color: var(--accent); }
+  .pdf svg { flex: none; color: var(--accent); }
+  .pdf span { overflow-wrap: anywhere; }
+
+
+  .tab[hidden] { display: none; }
+  .thumb.err::after { content: "!"; position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); font-size: 1.6rem; }
+
+  /* ---------- odblokowanie części prywatnej ---------- */
+  .unlock { max-width: 360px; margin: 48px auto; display: grid; gap: 12px; }
+  .unlock h2 { font-size: 1.3rem; margin: 0; }
+  .unlock p { margin: 0; color: var(--muted); }
+  .unlock input { font: inherit; padding: 11px 14px; border-radius: 10px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); }
+  .unlock .primary { font-weight: 700; padding: 11px 14px; border: 0; border-radius: 10px; background: var(--accent); color: var(--accent-ink); }
+  .unlock .primary:disabled { opacity: .6; cursor: default; }
+  .unlock .err { color: #c0392b; min-height: 1.4em; }
+  @media (prefers-color-scheme: dark) { .unlock .err { color: #ff8a80; } }
+  .vault-bar { display: flex; justify-content: flex-end; margin-bottom: 8px; }
+  .linkbtn { background: none; border: 0; color: var(--muted); text-decoration: underline; padding: 4px 2px; }
+
+  .empty { text-align: center; color: var(--muted); padding: 60px 16px; }
+
+  /* ---------- podgląd na cały ekran ---------- */
+  .viewer { position: fixed; inset: 0; z-index: 20; background: #0d0b10; display: flex; align-items: center; justify-content: center; touch-action: pan-y pinch-zoom; }
+  .viewer[hidden] { display: none; }
+  .viewer img { max-width: 100%; max-height: 100%; width: auto; height: auto; object-fit: contain; user-select: none; -webkit-user-drag: none; }
+  .vbtn { position: absolute; width: 46px; height: 46px; border-radius: 50%; border: 0; background: rgba(255,255,255,.14); color: #fff; display: grid; place-items: center; backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); }
+  .vbtn:hover { background: rgba(255,255,255,.28); }
+  .vbtn:focus-visible { outline-color: #fff; }
+  .vbtn.close { top: calc(12px + env(safe-area-inset-top, 0px)); right: calc(12px + env(safe-area-inset-right, 0px)); }
+  .vbtn.full  { top: calc(12px + env(safe-area-inset-top, 0px)); right: calc(68px + env(safe-area-inset-right, 0px)); }
+  .vbtn.nav { top: 50%; margin-top: -23px; }
+  .vbtn.prev { left: calc(10px + env(safe-area-inset-left, 0px)); }
+  .vbtn.next { right: calc(10px + env(safe-area-inset-right, 0px)); }
+  @media (min-width: 900px) {
+    .vbtn { width: 56px; height: 56px; }
+    .vbtn.nav { margin-top: -28px; }
+    .vbtn.full { right: calc(80px + env(safe-area-inset-right, 0px)); }
+    .vbtn.prev { left: 22px; } .vbtn.next { right: 22px; }
+  }
+  .vbar { position: absolute; left: 0; right: 0; bottom: 0; display: flex; justify-content: space-between; gap: 12px; color: #fff; font-size: .9rem; padding: 26px 16px calc(12px + env(safe-area-inset-bottom, 0px)); background: linear-gradient(transparent, rgba(0,0,0,.6)); pointer-events: none; }
+  .vbar span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .vbar span:last-child { flex: none; font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body>
+
+<header class="top">
+  <div class="top-row">
+    <h1>Komiksy AI</h1>
+    <div class="tabs" role="tablist" aria-label="Rodzaj plików">
+      <button class="tab" role="tab" data-tab="images" aria-selected="true">Obrazy</button>
+      <button class="tab" role="tab" data-tab="pdf" aria-selected="false">PDF</button>
+      <button class="tab" role="tab" data-tab="vault" aria-selected="false" hidden>Prywatne</button>
+    </div>
+  </div>
+  <div class="chips" id="chips" hidden></div>
+</header>
+
+<main id="content" aria-live="polite"></main>
+
+<div class="viewer" id="viewer" role="dialog" aria-modal="true" aria-label="Podgląd obrazka" hidden>
+  <img id="vimg" alt="" draggable="false">
+  <button class="vbtn full" id="vfull" type="button" aria-label="Pełny ekran">
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H3v5M16 3h5v5M8 21H3v-5M16 21h5v-5"/></svg>
+  </button>
+  <button class="vbtn close" id="vclose" type="button" aria-label="Zamknij">
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 5l14 14M19 5L5 19"/></svg>
+  </button>
+  <button class="vbtn nav prev" id="vprev" type="button" aria-label="Poprzedni obrazek">
+    <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 4l-8 8 8 8"/></svg>
+  </button>
+  <button class="vbtn nav next" id="vnext" type="button" aria-label="Następny obrazek">
+    <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 4l8 8-8 8"/></svg>
+  </button>
+  <div class="vbar"><span id="vtitle"></span><span id="vcount"></span></div>
+</div>
+
+<script>
+(function () {
+  // Dane wstawia automatycznie aktualizacja_html.py — nie edytuj ręcznie tej linii.
+  const DATA = /*DATA_START*/{"generated":"2026-09-20T13:37:32","images":[{"name":"przyjaciolki","label":"Przyjaciolki","items":[{"src":"images/przyjaciolki/2FZvc (1).jpg","title":"2FZvc (1)","thumb":"thumbs/images/przyjaciolki/2FZvc (1).jpg.jpg","ar":1.4884},{"src":"images/przyjaciolki/2FZvc.jpg","title":"2FZvc","thumb":"thumbs/images/przyjaciolki/2FZvc.jpg.jpg","ar":1.4884},{"src":"images/przyjaciolki/3b70j.jpg","title":"3b70j","thumb":"thumbs/images/przyjaciolki/3b70j.jpg.jpg","ar":1.4884},{"src":"images/przyjaciolki/7RrnG (1).jpg","title":"7RrnG (1)","thumb":"thumbs/images/przyjaciolki/7RrnG (1).jpg.jpg","ar":1.4884},{"src":"images/przyjaciolki/7RrnG.jpg","title":"7RrnG","thumb":"thumbs/images/przyjaciolki/7RrnG.jpg.jpg","ar":1.4884},{"src":"images/przyjaciolki/8gErb.jpg","title":"8gErb","thumb":"thumbs/images/przyjaciolki/8gErb.jpg.jpg","ar":1.4884},{"src":"images/przyjaciolki/76pjI.jpg","title":"76pjI","thumb":"thumbs/images/przyjaciolki/76pjI.jpg.jpg","ar":1.4884},{"src":"images/przyjaciolki/bA8zA.jpg","title":"bA8zA","thumb":"thumbs/images/przyjaciolki/bA8zA.jpg.jpg","ar":1.4884},{"src":"images/przyjaciolki/CTXd2.jpg","title":"CTXd2","thumb":"thumbs/images/przyjaciolki/CTXd2.jpg.jpg","ar":1.4884},{"src":"images/przyjaciolki/DNg5O (1).jpg","title":"DNg5O (1)","thumb":"thumbs/images/przyjaciolki/DNg5O (1).jpg.jpg","ar":1.4884},{"src":"images/przyjaciolki/DNg5O.jpg","title":"DNg5O","thumb":"thumbs/images/przyjaciolki/DNg5O.jpg.jpg","ar":1.4884},{"src":"images/przyjaciolki/fI7BU (1).jpg","title":"fI7BU (1)","thumb":"thumbs/images/przyjaciolki/fI7BU (1).jpg.jpg","ar":1.4884},{"src":"images/przyjaciolki/fI7BU.jpg","title":"fI7BU","thumb":"thumbs/images/przyjaciolki/fI7BU.jpg.jpg","ar":1.4884},{"src":"images/przyjaciolki/gqw7S.jpg","title":"gqw7S","thumb":"thumbs/images/przyjaciolki/gqw7S.jpg.jpg","ar":1.4884},{"src":"images/przyjaciolki/hsnE6.jpg","title":"hsnE6","thumb":"thumbs/images/przyjaciolki/hsnE6.jpg.jpg","ar":1.4884},{"src":"images/przyjaciolki/iDPGh (1).jpg","title":"iDPGh (1)","thumb":"thumbs/images/przyjaciolki/iDPGh (1).jpg.jpg","ar":1.4884},{"src":"images/przyjaciolki/iDPGh.jpg","title":"iDPGh","thumb":"thumbs/images/przyjaciolki/iDPGh.jpg.jpg","ar":1.4884},{"src":"images/przyjaciolki/izz4n.jpg","title":"izz4n","thumb":"thumbs/images/przyjaciolki/izz4n.jpg.jpg","ar":1.4884},{"src":"images/przyjaciolki/Jrv13.jpg","title":"Jrv13","thumb":"thumbs/images/przyjaciolki/Jrv13.jpg.jpg","ar":1.4884},{"src":"images/przyjaciolki/Mwtal.jpg","title":"Mwtal","thumb":"thumbs/images/przyjaciolki/Mwtal.jpg.jpg","ar":1.4884},{"src":"images/przyjaciolki/oIph1.jpg","title":"oIph1","thumb":"thumbs/images/przyjaciolki/oIph1.jpg.jpg","ar":1.4884},{"src":"images/przyjaciolki/ROB3U.jpg","title":"ROB3U","thumb":"thumbs/images/przyjaciolki/ROB3U.jpg.jpg","ar":1.4988},{"src":"images/przyjaciolki/rVrN6 (1).jpg","title":"rVrN6 (1)","thumb":"thumbs/images/przyjaciolki/rVrN6 (1).jpg.jpg","ar":1.4884},{"src":"images/przyjaciolki/spontaniczne.jpg","title":"spontaniczne","thumb":"thumbs/images/przyjaciolki/spontaniczne.jpg.jpg","ar":1.4884},{"src":"images/przyjaciolki/tuoM2.jpg","title":"tuoM2","thumb":"thumbs/images/przyjaciolki/tuoM2.jpg.jpg","ar":1.4884},{"src":"images/przyjaciolki/uWwOB.jpg","title":"uWwOB","thumb":"thumbs/images/przyjaciolki/uWwOB.jpg.jpg","ar":1.4884},{"src":"images/przyjaciolki/vCjWh (1).jpg","title":"vCjWh (1)","thumb":"thumbs/images/przyjaciolki/vCjWh (1).jpg.jpg","ar":1.4884},{"src":"images/przyjaciolki/vCjWh.jpg","title":"vCjWh","thumb":"thumbs/images/przyjaciolki/vCjWh.jpg.jpg","ar":1.4884},{"src":"images/przyjaciolki/wj2ZR.jpg","title":"wj2ZR","thumb":"thumbs/images/przyjaciolki/wj2ZR.jpg.jpg","ar":1.4884},{"src":"images/przyjaciolki/ySnFw.jpg","title":"ySnFw","thumb":"thumbs/images/przyjaciolki/ySnFw.jpg.jpg","ar":1.4884}]},{"name":"przytul_kobiete","label":"Przytul kobiete","items":[{"src":"images/przytul_kobiete/002.jpg","title":"002","thumb":"thumbs/images/przytul_kobiete/002.jpg.jpg","ar":1.4884},{"src":"images/przytul_kobiete/APmUS.jpg","title":"APmUS","thumb":"thumbs/images/przytul_kobiete/APmUS.jpg.jpg","ar":0.7203},{"src":"images/przytul_kobiete/grok_image_4743pb.jpg","title":"grok image 4743pb","thumb":"thumbs/images/przytul_kobiete/grok_image_4743pb.jpg.jpg","ar":1.4884},{"src":"images/przytul_kobiete/grok_image_nvj3rq.jpg","title":"grok image nvj3rq","thumb":"thumbs/images/przytul_kobiete/grok_image_nvj3rq.jpg.jpg","ar":1.4884},{"src":"images/przytul_kobiete/grok_image_o8dbss.jpg","title":"grok image o8dbss","thumb":"thumbs/images/przytul_kobiete/grok_image_o8dbss.jpg.jpg","ar":1.4884},{"src":"images/przytul_kobiete/grok_image_x29vzc7.jpg","title":"grok image x29vzc7","thumb":"thumbs/images/przytul_kobiete/grok_image_x29vzc7.jpg.jpg","ar":1.4884},{"src":"images/przytul_kobiete/grok_image_xbad2qb.jpg","title":"grok image xbad2qb","thumb":"thumbs/images/przytul_kobiete/grok_image_xbad2qb.jpg.jpg","ar":1.4884}]},{"name":"restauracja","label":"Restauracja","items":[{"src":"images/restauracja/1789887870353 — kopia.png","title":"1789887870353 — kopia","thumb":"thumbs/images/restauracja/1789887870353 — kopia.png.jpg","ar":0.7469},{"src":"images/restauracja/przynęta.png","title":"przynęta","thumb":"thumbs/images/restauracja/przynęta.png.jpg","ar":0.7469},{"src":"images/restauracja/restaruracja1.jpg","title":"restaruracja1","thumb":"thumbs/images/restauracja/restaruracja1.jpg.jpg","ar":0.7438},{"src":"images/restauracja/smierdzikorkiem.png","title":"smierdzikorkiem","thumb":"thumbs/images/restauracja/smierdzikorkiem.png.jpg","ar":0.7469}]}],"pdf":[{"name":"","label":"Inne","items":[{"src":"pdf/komiksIsabel.pdf","title":"komiksIsabel"}]}],"vault":{"v":1,"kdf":"PBKDF2-SHA256","iterations":600000,"salt":"svjszwuBmpQqcudA/m5SNA==","check":"gaxBm5wGrq0FcGaJrDGs5PyekbU6Ysv5AjXfYZkpLHPt3kFf+3w=","index":"haslo/index.enc"}}/*DATA_END*/;
+
+  const $ = (s) => document.querySelector(s);
+  const enc = (p) => p.split('/').map(encodeURIComponent).join('/');
+  const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const b64d = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
+
+  const state = { tab: 'images', folder: '*' };
+  const vault = { key: null, groups: null };
+  const blobCache = new Map();
+  let data = null, flat = [], idx = 0, viewerOpen = false, lastFocus = null, io = null;
+
+  const viewer = $('#viewer'), vimg = $('#vimg');
+
+  /* ---------- odszyfrowywanie (część prywatna) ---------- */
+  const decryptBytes = (key, bytes) =>
+    crypto.subtle.decrypt({ name: 'AES-GCM', iv: bytes.slice(0, 12) }, key, bytes.slice(12));
+
+  async function unlock(password) {
+    if (!window.crypto || !crypto.subtle) {
+      throw new Error('Odblokowanie działa tylko na stronie https (GitHub Pages) albo na localhost.');
+    }
+    const v = data.vault;
+    const material = await crypto.subtle.importKey('raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveKey']);
+    const key = await crypto.subtle.deriveKey(
+      { name: 'PBKDF2', salt: b64d(v.salt), iterations: v.iterations, hash: 'SHA-256' },
+      material, { name: 'AES-GCM', length: 256 }, false, ['decrypt']);
+    try {
+      await decryptBytes(key, b64d(v.check));
+    } catch (e) {
+      throw new Error('Nieprawidłowe hasło.');
+    }
+    const r = await fetch(enc(v.index), { cache: 'no-cache' });
+    if (!r.ok) throw new Error('Nie znaleziono danych prywatnych (' + r.status + ').');
+    const idx = JSON.parse(new TextDecoder().decode(await decryptBytes(key, new Uint8Array(await r.arrayBuffer()))));
+    idx.groups.forEach((g) => g.items.forEach((it) => { it.vault = true; }));
+    vault.key = key;
+    vault.groups = idx.groups;
+  }
+
+  function lockVault() {
+    blobCache.forEach((p) => p.then((u) => URL.revokeObjectURL(u)).catch(() => {}));
+    blobCache.clear();
+    vault.key = null;
+    vault.groups = null;
+    state.folder = '*';
+    render();
+  }
+
+  function blobUrl(path, mime) {
+    if (!blobCache.has(path)) {
+      blobCache.set(path, fetch(enc(path)).then((r) => {
+        if (!r.ok) throw new Error(r.status);
+        return r.arrayBuffer();
+      }).then((buf) => decryptBytes(vault.key, new Uint8Array(buf)))
+        .then((plain) => URL.createObjectURL(new Blob([plain], { type: mime }))));
+    }
+    return blobCache.get(path);
+  }
+
+  /* ---------- rysowanie strony ---------- */
+  const groupsOf = (tab) => (tab === 'vault' ? (vault.groups || []) : data[tab]);
+  const countOf = (tab) => groupsOf(tab).reduce((s, g) => s + g.items.length, 0);
+
+  function start(d) {
+    data = d;
+    data.images.forEach((g) => g.items.forEach((it) => { it.kind = 'image'; }));
+    data.pdf.forEach((g) => g.items.forEach((it) => { it.kind = 'pdf'; }));
+    document.querySelectorAll('.tab').forEach((t) => {
+      if (t.dataset.tab === 'vault') t.hidden = !data.vault;
+      t.onclick = () => { state.tab = t.dataset.tab; state.folder = '*'; render(); };
+    });
+    render();
+  }
+
+  function updateTabLabels() {
+    document.querySelectorAll('.tab').forEach((t) => {
+      const tab = t.dataset.tab;
+      if (tab === 'images') t.textContent = 'Obrazy (' + countOf('images') + ')';
+      else if (tab === 'pdf') t.textContent = 'PDF (' + countOf('pdf') + ')';
+      else t.textContent = vault.groups ? 'Prywatne (' + countOf('vault') + ')' : 'Prywatne';
+      t.setAttribute('aria-selected', String(tab === state.tab));
+    });
+  }
+
+  function render() {
+    updateTabLabels();
+    renderChips();
+    renderContent();
+    window.scrollTo(0, 0);
+  }
+
+  function renderChips() {
+    const box = $('#chips');
+    box.innerHTML = '';
+    const groups = groupsOf(state.tab);
+    box.hidden = groups.length < 2;
+    if (box.hidden) return;
+    const add = (name, label, count) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'chip';
+      b.setAttribute('aria-pressed', String(state.folder === name));
+      b.innerHTML = '<span></span><small>' + count + '</small>';
+      b.firstChild.textContent = label;
+      b.onclick = () => { state.folder = name; render(); };
+      box.append(b);
+    };
+    add('*', 'Wszystkie', countOf(state.tab));
+    groups.forEach((g) => add(g.name, g.label, g.items.length));
+  }
+
+  function emptyMsg(main, text) {
+    const p = document.createElement('p');
+    p.className = 'empty';
+    p.textContent = text;
+    main.append(p);
+  }
+
+  function heading(g) {
+    const h = document.createElement('h2');
+    h.textContent = g.label;
+    const s = document.createElement('small');
+    s.textContent = g.items.length;
+    h.append(s);
+    return h;
+  }
+
+  function renderUnlock(main) {
+    const box = document.createElement('div');
+    box.className = 'unlock';
+    box.innerHTML =
+      '<h2>Prywatne</h2>' +
+      '<p>Te grafiki są zaszyfrowane. Wpisz hasło, aby je zobaczyć.</p>' +
+      '<input type="password" id="pw" autocomplete="current-password" aria-label="Hasło" placeholder="Hasło">' +
+      '<button type="button" class="primary" id="pwgo">Odblokuj</button>' +
+      '<p class="err" id="pwerr" role="alert"></p>';
+    main.append(box);
+    const input = box.querySelector('#pw'), btn = box.querySelector('#pwgo'), err = box.querySelector('#pwerr');
+    const go = async () => {
+      if (!input.value) { err.textContent = 'Wpisz hasło.'; return; }
+      btn.disabled = true; btn.textContent = 'Sprawdzam…'; err.textContent = '';
+      try {
+        await unlock(input.value);
+        state.folder = '*';
+        render();
+      } catch (e) {
+        err.textContent = e.message || 'Nie udało się odblokować.';
+        btn.disabled = false; btn.textContent = 'Odblokuj';
+        input.select();
+      }
+    };
+    btn.onclick = go;
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') go(); });
+    input.focus({ preventScroll: true });
+  }
+
+  function renderContent() {
+    const main = $('#content');
+    if (io) { io.disconnect(); io = null; }
+    main.innerHTML = '';
+    flat = [];
+
+    if (state.tab === 'vault' && !vault.groups) { renderUnlock(main); return; }
+
+    const groups = groupsOf(state.tab).filter((g) => state.folder === '*' || g.name === state.folder);
+    if (state.tab === 'vault') {
+      const bar = document.createElement('div');
+      bar.className = 'vault-bar';
+      const lock = document.createElement('button');
+      lock.type = 'button';
+      lock.className = 'linkbtn';
+      lock.textContent = 'Zablokuj';
+      lock.onclick = lockVault;
+      bar.append(lock);
+      main.append(bar);
+    }
+    if (!groups.length) {
+      emptyMsg(main, state.tab === 'pdf'
+        ? 'Brak plików PDF. Wgraj je do folderu pdf/ i uruchom aktualizacja_html.py.'
+        : 'Brak plików. Wgraj je do odpowiedniego folderu i uruchom aktualizacja_html.py.');
+      return;
+    }
+
+    if (state.tab === 'vault' || 'IntersectionObserver' in window) {
+      io = new IntersectionObserver((entries) => {
+        entries.forEach((en) => {
+          if (!en.isIntersecting) return;
+          io.unobserve(en.target);
+          en.target._load && en.target._load();
+        });
+      }, { rootMargin: '300px' });
+    }
+
+    const showHeads = state.folder === '*' && groups.length > 1;
+    groups.forEach((g) => {
+      const sec = document.createElement('section');
+      if (showHeads) sec.append(heading(g));
+
+      const imgs = g.items.filter((it) => it.kind !== 'pdf');
+      const pdfs = g.items.filter((it) => it.kind === 'pdf');
+
+      if (imgs.length) {
+        const grid = document.createElement('div');
+        grid.className = 'grid';
+        imgs.forEach((it) => {
+          const i = flat.length;
+          flat.push({ src: it.src, title: it.title, group: g.label, vault: !!it.vault, mime: it.mime });
+          const b = document.createElement('button');
+          b.type = 'button';
+          b.className = 'thumb';
+          b.setAttribute('aria-label', 'Otwórz: ' + it.title);
+          if (it.ar) b.style.setProperty('--ar', it.ar);
+          const im = new Image();
+          im.decoding = 'async';
+          im.alt = it.title;
+          im.onload = () => b.classList.add('ok');
+          if (it.vault) {
+            b._load = () => {
+              blobUrl(it.thumb || it.src, it.thumb ? 'image/jpeg' : it.mime)
+                .then((u) => { im.src = u; })
+                .catch(() => b.classList.add('err'));
+            };
+            io.observe(b);
+          } else {
+            im.loading = 'lazy';
+            im.src = enc(it.thumb || it.src);
+          }
+          b.append(im);
+          b.onclick = () => openViewer(i);
+          grid.append(b);
+        });
+        sec.append(grid);
+      }
+
+      if (pdfs.length) {
+        const list = document.createElement('div');
+        list.className = 'pdf-list';
+        pdfs.forEach((it) => {
+          const a = document.createElement('a');
+          a.className = 'pdf';
+          a.href = it.vault ? '#' : enc(it.src);
+          a.innerHTML = '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/></svg><span></span>';
+          a.querySelector('span').textContent = it.title;
+          if (it.vault) {
+            a.onclick = (e) => {
+              e.preventDefault();
+              const w = window.open('', '_blank');
+              blobUrl(it.src, 'application/pdf').then((u) => { if (w) w.location.href = u; else location.href = u; })
+                .catch(() => { if (w) w.close(); });
+            };
+          } else {
+            a.target = '_blank';
+            a.rel = 'noopener';
+          }
+          list.append(a);
+        });
+        sec.append(list);
+      }
+      main.append(sec);
+    });
+  }
+
+  /* ---------- podgląd ---------- */
+  function load(it) {
+    return it.vault ? blobUrl(it.src, it.mime) : Promise.resolve(enc(it.src));
+  }
+
+  function show(dir) {
+    const it = flat[idx];
+    vimg.alt = it.title;
+    if (it.vault) vimg.removeAttribute('src');
+    load(it).then((u) => { if (flat[idx] === it) vimg.src = u; }).catch(() => {});
+    $('#vtitle').textContent = it.title;
+    $('#vcount').textContent = (idx + 1) + ' / ' + flat.length;
+    if (dir && !reduceMotion) {
+      vimg.animate([{ transform: 'translateX(' + dir * 40 + 'px)', opacity: 0 }, { transform: 'none', opacity: 1 }], { duration: 200, easing: 'ease-out' });
+    }
+    [idx + 1, idx - 1].forEach((k) => {
+      const n = flat[(k + flat.length) % flat.length];
+      if (!n) return;
+      if (n.vault) load(n).catch(() => {}); else new Image().src = enc(n.src);
+    });
+  }
+
+  function go(dir) {
+    if (!flat.length) return;
+    idx = (idx + dir + flat.length) % flat.length;
+    show(dir);
+  }
+
+  function openViewer(i) {
+    idx = i;
+    lastFocus = document.activeElement;
+    viewer.hidden = false;
+    document.body.style.overflow = 'hidden';
+    viewerOpen = true;
+    history.pushState({ viewer: 1 }, '');
+    show(0);
+    $('#vclose').focus({ preventScroll: true });
+  }
+
+  function hideViewer() {
+    viewer.hidden = true;
+    document.body.style.overflow = '';
+    viewerOpen = false;
+    if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+    if (lastFocus && lastFocus.focus) lastFocus.focus({ preventScroll: true });
+  }
+
+  function closeViewer() {
+    if (!viewerOpen) return;
+    if (history.state && history.state.viewer) history.back(); else hideViewer();
+  }
+
+  window.addEventListener('popstate', () => { if (viewerOpen) hideViewer(); });
+
+  $('#vclose').onclick = closeViewer;
+  $('#vprev').onclick = () => go(-1);
+  $('#vnext').onclick = () => go(1);
+
+  const fullBtn = $('#vfull');
+  if (!viewer.requestFullscreen) fullBtn.style.display = 'none';
+  fullBtn.onclick = () => {
+    if (document.fullscreenElement) document.exitFullscreen();
+    else viewer.requestFullscreen().catch(() => {});
+  };
+
+  document.addEventListener('keydown', (e) => {
+    if (!viewerOpen) return;
+    if (e.key === 'ArrowLeft') { e.preventDefault(); go(-1); }
+    else if (e.key === 'ArrowRight') { e.preventDefault(); go(1); }
+    else if (e.key === 'Escape') { closeViewer(); }
+  });
+
+  /* przesuwanie palcem */
+  let sx = 0, sy = 0, dx = 0, tracking = false;
+  viewer.addEventListener('touchstart', (e) => {
+    const zoomed = window.visualViewport && window.visualViewport.scale > 1.02;
+    if (e.touches.length !== 1 || zoomed) { tracking = false; return; }
+    tracking = true; dx = 0;
+    sx = e.touches[0].clientX; sy = e.touches[0].clientY;
+  }, { passive: true });
+  viewer.addEventListener('touchmove', (e) => {
+    if (!tracking) return;
+    dx = e.touches[0].clientX - sx;
+    const dy = e.touches[0].clientY - sy;
+    if (Math.abs(dy) > Math.abs(dx)) return;
+    vimg.style.transform = 'translateX(' + dx * 0.5 + 'px)';
+  }, { passive: true });
+  const endTouch = (commit) => {
+    if (!tracking) return;
+    tracking = false;
+    vimg.style.transform = '';
+    if (commit && Math.abs(dx) > 50) go(dx < 0 ? 1 : -1);
+    dx = 0;
+  };
+  viewer.addEventListener('touchend', () => endTouch(true));
+  viewer.addEventListener('touchcancel', () => endTouch(false));
+
+  /* ---------- start ---------- */
+  if (DATA) {
+    start(DATA);
+  } else {
+    fetch('galeria.json', { cache: 'no-cache' })
+      .then((r) => { if (!r.ok) throw new Error(r.status); return r.json(); })
+      .then(start)
+      .catch(() => emptyMsg($('#content'), 'Nie znaleziono danych galerii. Uruchom aktualizacja_html.py.'));
+  }
+})();
+</script>
+</body>
+</html>

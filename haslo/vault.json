@@ -1,0 +1,8 @@
+{
+  "v": 1,
+  "kdf": "PBKDF2-SHA256",
+  "iterations": 600000,
+  "salt": "svjszwuBmpQqcudA/m5SNA==",
+  "check": "gaxBm5wGrq0FcGaJrDGs5PyekbU6Ysv5AjXfYZkpLHPt3kFf+3w=",
+  "index": "haslo/index.enc"
+}
